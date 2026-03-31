@@ -3,7 +3,9 @@
 	"name": "project-e",
 	"main": "./src/worker/index.ts",
 	"compatibility_date": "2025-10-08",
-	"compatibility_flags": ["nodejs_compat"],
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
 	"observability": {
 		"enabled": true
 	},
@@ -11,5 +13,25 @@
 	"assets": {
 		"directory": "./dist/client",
 		"not_found_handling": "single-page-application"
-	}
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "absensi_db",
+			"database_id": "bcfc7fc8-fd79-4014-8d21-0f8f2a626312",
+			"remote": true
+		}
+	],
+	"r2_buckets": [
+		{
+			"bucket_name": "absensi-photos",
+			"binding": "BUCKET",
+			"remote": true
+		},
+		{
+			"bucket_name": "absensi-photos-dev",
+			"binding": "absensi_photos_dev",
+			"remote": true
+		}
+	]
 }
