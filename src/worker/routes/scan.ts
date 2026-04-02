@@ -16,11 +16,16 @@ async function evaluateScan(c: any, qr_identifier: string, isConfirm: boolean) {
 	
 	const teacherName = userData ? userData.full_name : "Guru / Staf";
 
-	const dateObj = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" }));
-	const todayDate = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`;
-	const currentTimeStr = `${String(dateObj.getHours()).padStart(2, '0')}:${String(dateObj.getMinutes()).padStart(2, '0')}`;
-	const currentTimestamp = Math.floor(dateObj.getTime() / 1000);
-	let dayOfWeek = dateObj.getDay();
+	// SETUP ZONA WAKTU (WIB - UTC+7)
+	const now = new Date();
+	const currentTimestamp = Math.floor(now.getTime() / 1000); // Unix Timestamp ASLI (Wajib murni UTC)
+
+	// Geser waktu 7 jam ke depan murni untuk mendapatkan string YYYY-MM-DD dan HH:MM versi WIB
+	const wibTime = new Date(now.getTime() + (7 * 60 * 60 * 1000));
+	const todayDate = `${wibTime.getUTCFullYear()}-${String(wibTime.getUTCMonth() + 1).padStart(2, '0')}-${String(wibTime.getUTCDate()).padStart(2, '0')}`;
+	const currentTimeStr = `${String(wibTime.getUTCHours()).padStart(2, '0')}:${String(wibTime.getUTCMinutes()).padStart(2, '0')}`;
+	
+	let dayOfWeek = wibTime.getUTCDay();
 	if (dayOfWeek === 0) dayOfWeek = 7;
 
 	// LOGIKA 1: ABSENSI HARIAN GURU

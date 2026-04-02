@@ -385,4 +385,59 @@ admin.get("/attendance/today", async (c) => {
 	}
 });
 
+// =======================================================
+// FITUR REKAPITULASI EXCEL
+// =======================================================
+
+// 1. Rekap Siswa Bulanan (Ditambah check_in_time & check_out_time)
+admin.get("/recap/students", async (c) => {
+	try {
+		const month = c.req.query("month")?.padStart(2, '0');
+		const year = c.req.query("year");
+		
+		if (!month || !year) return c.json({ success: false, message: "Bulan dan tahun diperlukan." }, 400);
+		
+		const likeQuery = `${year}-${month}-%`;
+
+		const query = `
+			SELECT s.id, s.full_name, c.name as class_name, a.date, a.check_in_time, a.check_out_time
+			FROM students s
+			LEFT JOIN classes c ON s.class_id = c.id
+			LEFT JOIN attendance_records a ON s.id = a.student_id AND a.date LIKE ?
+			WHERE s.deleted_at IS NULL
+			ORDER BY c.name ASC, s.full_name ASC
+		`;
+		
+		const { results } = await c.env.DB.prepare(query).bind(likeQuery).all();
+		return c.json({ success: true, data: results });
+	} catch (error) {
+		return c.json({ success: false, message: "Gagal mengambil rekap siswa.", error: String(error) }, 500);
+	}
+});
+
+// 2. Rekap Guru Bulanan (Ditambah check_in_time & check_out_time)
+admin.get("/recap/teachers", async (c) => {
+	try {
+		const month = c.req.query("month")?.padStart(2, '0');
+		const year = c.req.query("year");
+		
+		if (!month || !year) return c.json({ success: false, message: "Bulan dan tahun diperlukan." }, 400);
+		
+		const likeQuery = `${year}-${month}-%`;
+
+		const query = `
+			SELECT u.id, u.front_title, u.full_name, u.back_title, a.date, a.check_in_time, a.check_out_time
+			FROM users u
+			LEFT JOIN teacher_daily_attendance a ON u.id = a.teacher_id AND a.date LIKE ?
+			WHERE u.role = 'GURU' AND u.deleted_at IS NULL
+			ORDER BY u.full_name ASC
+		`;
+		
+		const { results } = await c.env.DB.prepare(query).bind(likeQuery).all();
+		return c.json({ success: true, data: results });
+	} catch (error) {
+		return c.json({ success: false, message: "Gagal mengambil rekap guru.", error: String(error) }, 500);
+	}
+});
+
 export default admin;
