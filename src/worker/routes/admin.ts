@@ -440,4 +440,89 @@ admin.get("/recap/teachers", async (c) => {
 	}
 });
 
+// --- MANAJEMEN ACARA / EVENT GURU ---
+
+// 1. GET: Daftar semua acara
+// --- MANAJEMEN ACARA / EVENT GURU ---
+
+// 1. GET: Daftar semua acara
+admin.get("/events", async (c) => {
+	try {
+		// Menggunakan alias "event_date as date" agar frontend React tidak perlu diubah lagi
+		const { results } = await c.env.DB.prepare(
+			"SELECT id, name, description, event_date as date, qr_token, created_by FROM events ORDER BY event_date DESC"
+		).all();
+		return c.json({ success: true, data: results });
+	} catch (error) {
+		return c.json({ success: false, message: "Gagal memuat daftar acara." }, 500);
+	}
+});
+
+// 2. POST: Buat acara baru
+admin.post("/events", async (c) => {
+	try {
+		const body = await c.req.json();
+		const { name, date, description } = body;
+        
+        // Ambil data user/admin yang sedang login untuk mengisi kolom 'created_by'
+		const user = c.get("user"); 
+
+		if (!name || !date) {
+			return c.json({ success: false, message: "Nama acara dan tanggal wajib diisi." }, 400);
+		}
+
+		const eventId = crypto.randomUUID();
+		const qrToken = `EVENT-${crypto.randomUUID().substring(0, 8).toUpperCase()}`;
+
+		// Eksekusi SQL yang sudah disesuaikan persis dengan tabel Anda
+		await c.env.DB.prepare(
+			"INSERT INTO events (id, name, description, event_date, qr_token, created_by) VALUES (?, ?, ?, ?, ?, ?)"
+		).bind(eventId, name, description || null, date, qrToken, user.id).run();
+
+		return c.json({ success: true, message: "Acara berhasil dibuat." });
+	} catch (error) {
+		console.error("[DB ERROR di POST /events]:", error);
+		return c.json({ success: false, message: "Gagal membuat acara baru.", error: String(error) }, 500);
+	}
+});
+
+// 3. DELETE: Hapus acara
+// 3. DELETE: Hapus acara
+admin.delete("/events/:id", async (c) => {
+	try {
+		const eventId = c.req.param("id");
+		
+		// PERBAIKAN: Gunakan .bind(eventId) sebelum .run()
+		await c.env.DB.prepare("DELETE FROM events WHERE id = ?").bind(eventId).run();
+		
+		// Opsional: Hapus juga data kehadiran di acara tersebut
+		await c.env.DB.prepare("DELETE FROM event_attendance WHERE event_id = ?").bind(eventId).run();
+		
+		return c.json({ success: true, message: "Acara telah dihapus." });
+	} catch (error) {
+		return c.json({ success: false, message: "Gagal menghapus acara.", error: String(error) }, 500);
+	}
+});
+// 4. GET: Ekstrak / Unduh Rekap Kehadiran Acara
+admin.get("/events/:id/recap", async (c) => {
+	try {
+		const eventId = c.req.param("id");
+		
+		const query = `
+			SELECT u.front_title, u.full_name, u.back_title, ea.scanned_at, ea.status
+			FROM event_attendance ea
+			JOIN users u ON ea.user_id = u.id
+			WHERE ea.event_id = ?
+			ORDER BY ea.scanned_at ASC
+		`;
+		
+		const { results } = await c.env.DB.prepare(query).bind(eventId).all();
+		return c.json({ success: true, data: results });
+	} catch (error) {
+		console.error("[DB ERROR di GET /events/:id/recap]:", error);
+		return c.json({ success: false, message: "Gagal mengambil data rekap acara.", error: String(error) }, 500);
+	}
+});
+
+
 export default admin;
