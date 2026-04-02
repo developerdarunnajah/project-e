@@ -1,232 +1,114 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
-// Definisi tipe data agar TypeScript mengenali struktur kita
-type Student = { id: string; full_name: string; photo_url: string; qr_identifier: string };
-type ClassItem = { id: string; name: string };
+interface ClassItem {
+	id: number;
+	name: string;
+}
 
 export default function ClassManager() {
-	// State untuk data dari server
 	const [classes, setClasses] = useState<ClassItem[]>([]);
-	const [students, setStudents] = useState<Student[]>([]);
-	
-	// State untuk Form Tambah Kelas (Hanya Nama Kelas)
-	const [newClassName, setNewClassName] = useState("");
-	const [isAddingClass, setIsAddingClass] = useState(false);
-	
-	// State untuk Form Plotting (Pembagian) Siswa
-	const [selectedClassId, setSelectedClassId] = useState("");
-	const [academicYear, setAcademicYear] = useState("2025/2026"); // Default tahun ajaran
-	const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
-	const [isAssigning, setIsAssigning] = useState(false);
+	const [isAdding, setIsAdding] = useState(false);
+	const [isLoading, setIsLoading] = useState(false);
+	const formRef = useRef<HTMLFormElement>(null);
 
-	// State untuk Notifikasi
-	const [message, setMessage] = useState({ type: "", text: "" });
-
-	// Mengambil data Kelas dan Siswa saat komponen pertama kali dimuat
-	const fetchData = async () => {
+	const fetchClasses = async () => {
+		const token = localStorage.getItem("authToken");
 		try {
-			const token = localStorage.getItem("authToken");
-			const headers = { "Authorization": `Bearer ${token}` };
-
-			// Ambil Kelas
-			const resClasses = await fetch("/api/admin/classes", { headers });
-			const dataClasses = await resClasses.json();
-			if (dataClasses.success) setClasses(dataClasses.data);
-
-			// Ambil Siswa
-			const resStudents = await fetch("/api/admin/students", { headers });
-			const dataStudents = await resStudents.json();
-			if (dataStudents.success) setStudents(dataStudents.data);
-		} catch (error) {
-			console.error("Gagal mengambil data:", error);
+			const res = await fetch("/api/admin/classes", {
+				headers: { "Authorization": `Bearer ${token}` }
+			});
+			const data = await res.json();
+			if (data.success) {
+				setClasses(data.data);
+			}
+		} catch (err) {
+			console.error("Gagal memuat data kelas", err);
 		}
 	};
 
 	useEffect(() => {
-		fetchData();
+		fetchClasses();
 	}, []);
 
-	// Fungsi Menyimpan Kelas Baru
-	const handleAddClass = async (e: React.FormEvent) => {
+	const handleAdd = async (e: React.FormEvent) => {
 		e.preventDefault();
-		setIsAddingClass(true);
-		setMessage({ type: "", text: "" });
+		if (!formRef.current) return;
+		setIsLoading(true);
+
+		const formData = new FormData(formRef.current);
+		const dataObj = Object.fromEntries(formData.entries());
+		const token = localStorage.getItem("authToken");
 
 		try {
-			const token = localStorage.getItem("authToken");
-			const response = await fetch("/api/admin/classes", {
+			const res = await fetch("/api/admin/classes", {
 				method: "POST",
-				headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-				body: JSON.stringify({ name: newClassName })
+				headers: { 
+					"Authorization": `Bearer ${token}`,
+					"Content-Type": "application/json"
+				},
+				body: JSON.stringify(dataObj)
 			});
-			const result = await response.json();
-
-			if (!response.ok || !result.success) {
-				setMessage({ type: "error", text: result.message || "Gagal menambah kelas." });
-				return;
+			const data = await res.json();
+			if (data.success) {
+				alert("Kelas baru berhasil ditambahkan!");
+				setIsAdding(false);
+				fetchClasses();
+			} else {
+				alert(data.message);
 			}
-
-			setMessage({ type: "success", text: result.message });
-			setNewClassName(""); // Reset nama kelas
-			fetchData(); // Muat ulang daftar kelas agar ID barunya muncul
-		} catch (error) {
-			setMessage({ type: "error", text: "Kesalahan jaringan." });
+		} catch (err) {
+			alert("Terjadi kesalahan jaringan.");
 		} finally {
-			setIsAddingClass(false);
-		}
-	};
-
-	// Fungsi Mencentang Siswa
-	const toggleStudentSelection = (studentId: string) => {
-		setSelectedStudentIds(prev => 
-			prev.includes(studentId) 
-				? prev.filter(id => id !== studentId) // Hapus jika sudah dicentang
-				: [...prev, studentId] // Tambah jika belum dicentang
-		);
-	};
-
-	// Fungsi Menyimpan Plotting Siswa ke Kelas
-	const handleAssignStudents = async (e: React.FormEvent) => {
-		e.preventDefault();
-		if (selectedStudentIds.length === 0) {
-			setMessage({ type: "error", text: "Pilih minimal 1 siswa terlebih dahulu." });
-			return;
-		}
-
-		setIsAssigning(true);
-		setMessage({ type: "", text: "" });
-
-		try {
-			const token = localStorage.getItem("authToken");
-			const response = await fetch("/api/admin/class-assign", {
-				method: "POST",
-				headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-				body: JSON.stringify({ 
-					class_id: selectedClassId, 
-					academic_year: academicYear, 
-					student_ids: selectedStudentIds 
-				})
-			});
-			const result = await response.json();
-
-			if (!response.ok || !result.success) {
-				setMessage({ type: "error", text: result.message || "Gagal memasukkan siswa ke kelas." });
-				return;
-			}
-
-			setMessage({ type: "success", text: result.message });
-			setSelectedStudentIds([]); // Kosongkan centangan setelah berhasil
-		} catch (error) {
-			setMessage({ type: "error", text: "Kesalahan jaringan." });
-		} finally {
-			setIsAssigning(false);
+			setIsLoading(false);
 		}
 	};
 
 	return (
-		<div>
-			<h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '1.5rem', color: '#1f2937' }}>Manajemen Kelas & Rombongan Belajar</h2>
-			
-			{message.text && (
-				<div style={{ padding: '0.75rem', marginBottom: '1.5rem', borderRadius: '4px', backgroundColor: message.type === 'error' ? '#fee2e2' : '#dcfce3', color: message.type === 'error' ? '#b91c1c' : '#15803d' }}>
-					{message.text}
-				</div>
-			)}
-
-			<div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '2rem' }}>
-				
-				{/* KOLOM KIRI: Buat Kelas Baru */}
-				<div style={{ backgroundColor: '#f9fafb', padding: '1.5rem', borderRadius: '8px', border: '1px solid #e5e7eb', height: 'fit-content' }}>
-					<h3 style={{ fontSize: '1.125rem', fontWeight: 'bold', marginBottom: '1rem' }}>Tambah Kelas Baru</h3>
-					<form onSubmit={handleAddClass} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-						<div>
-							<label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500' }}>Nama Kelas *</label>
-							<input type="text" value={newClassName} onChange={(e) => setNewClassName(e.target.value)} required placeholder="Contoh: Kelas X IPA 1" style={{ width: '100%', padding: '0.75rem', borderRadius: '4px', border: '1px solid #d1d5db', boxSizing: 'border-box' }} />
-						</div>
-						<button type="submit" disabled={isAddingClass} style={{ marginTop: '0.5rem', padding: '0.75rem', backgroundColor: isAddingClass ? '#9ca3af' : '#2563eb', color: 'white', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: isAddingClass ? 'not-allowed' : 'pointer' }}>
-							{isAddingClass ? "Menyimpan..." : "Buat Kelas"}
+		<div style={{ maxWidth: '800px', margin: '0 auto' }}>
+			{!isAdding ? (
+				<div>
+					<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+						<h2 style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>Master Data Kelas</h2>
+						<button 
+							onClick={() => setIsAdding(true)} 
+							style={{ padding: '0.75rem 1.5rem', backgroundColor: '#10b981', color: 'white', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
+						>
+							+ Tambah Kelas
 						</button>
-					</form>
+					</div>
 
-					{/* Menampilkan daftar kelas yang sudah ada */}
-					<div style={{ marginTop: '2rem' }}>
-						<h4 style={{ fontSize: '1rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>Daftar Kelas Tersedia</h4>
-						<ul style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: '200px', overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: '4px', backgroundColor: 'white' }}>
-							{classes.length === 0 ? (
-								<li style={{ padding: '0.75rem', color: '#6b7280', fontSize: '0.875rem' }}>Belum ada kelas.</li>
-							) : (
-								classes.map(cls => (
-									<li key={cls.id} style={{ padding: '0.75rem', borderBottom: '1px solid #e5e7eb', fontSize: '0.875rem', display: 'flex', justifyContent: 'space-between' }}>
-										<span style={{ fontWeight: 'bold' }}>{cls.name}</span>
-										<span style={{ color: '#6b7280', fontSize: '0.75rem' }}>ID: {cls.id}</span>
-									</li>
-								))
-							)}
-						</ul>
+					<div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '1rem' }}>
+						{classes.length === 0 ? (
+							<p style={{ color: '#6b7280', gridColumn: '1 / -1', textAlign: 'center', padding: '2rem' }}>Belum ada data kelas.</p>
+						) : (
+							classes.map((cls) => (
+								<div key={cls.id} style={{ padding: '1.25rem', backgroundColor: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '8px', textAlign: 'center', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
+									<h3 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#1f2937' }}>{cls.name}</h3>
+								</div>
+							))
+						)}
 					</div>
 				</div>
+			) : (
+				<div style={{ backgroundColor: 'white', padding: '2rem', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+					<button onClick={() => setIsAdding(false)} style={{ marginBottom: '1.5rem', padding: '0.5rem 1rem', backgroundColor: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer' }}>
+						⬅ Kembali
+					</button>
 
-				{/* KOLOM KANAN: Plotting Siswa */}
-				<div style={{ backgroundColor: '#ffffff', padding: '1.5rem', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
-					<h3 style={{ fontSize: '1.125rem', fontWeight: 'bold', marginBottom: '1rem' }}>Plotting Siswa ke Kelas</h3>
-					
-					<form onSubmit={handleAssignStudents} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-						<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-							<div>
-								<label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500' }}>Pilih Kelas Tujuan *</label>
-								<select value={selectedClassId} onChange={(e) => setSelectedClassId(e.target.value)} required style={{ width: '100%', padding: '0.75rem', borderRadius: '4px', border: '1px solid #d1d5db', backgroundColor: 'white' }}>
-									<option value="" disabled>-- Pilih Kelas --</option>
-									{classes.map(cls => (
-										<option key={cls.id} value={cls.id}>{cls.name}</option>
-									))}
-								</select>
-							</div>
-							<div>
-								<label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500' }}>Tahun Ajaran *</label>
-								<input type="text" value={academicYear} onChange={(e) => setAcademicYear(e.target.value)} required style={{ width: '100%', padding: '0.75rem', borderRadius: '4px', border: '1px solid #d1d5db', boxSizing: 'border-box' }} />
-							</div>
-						</div>
-
-						{/* Daftar Checkbox Siswa */}
+					<form ref={formRef} onSubmit={handleAdd} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+						<h3 style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>Tambah Kelas Baru</h3>
+						
 						<div>
-							<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-								<label style={{ fontSize: '0.875rem', fontWeight: '500' }}>Pilih Siswa ({selectedStudentIds.length} Terpilih)</label>
-								<button type="button" onClick={() => setSelectedStudentIds(students.map(s => s.id))} style={{ fontSize: '0.75rem', color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer' }}>Pilih Semua</button>
-							</div>
-							
-							<div style={{ border: '1px solid #d1d5db', borderRadius: '4px', maxHeight: '350px', overflowY: 'auto', padding: '0.5rem' }}>
-								{students.length === 0 ? (
-									<p style={{ padding: '1rem', textAlign: 'center', color: '#6b7280', fontSize: '0.875rem' }}>Belum ada data siswa.</p>
-								) : (
-									students.map(student => (
-										<label key={student.id} style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.75rem', borderBottom: '1px solid #f3f4f6', cursor: 'pointer' }}>
-											<input 
-												type="checkbox" 
-												checked={selectedStudentIds.includes(student.id)}
-												onChange={() => toggleStudentSelection(student.id)}
-												style={{ width: '1.25rem', height: '1.25rem', cursor: 'pointer' }}
-											/>
-											{student.photo_url ? (
-												<img src={student.photo_url} alt="Foto" style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover' }} />
-											) : (
-												<div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#e5e7eb', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', fontSize: '0.75rem' }}>No Pic</div>
-											)}
-											<span style={{ fontWeight: '500' }}>{student.full_name}</span>
-										</label>
-									))
-								)}
-							</div>
+							<label style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>Nama Kelas</label>
+							<input type="text" name="name" required placeholder="Contoh: XII-RPL-1" style={{ width: '100%', padding: '0.875rem', borderRadius: '6px', border: '1px solid #d1d5db', outline: 'none' }} />
 						</div>
 
-						<div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-							<button type="submit" disabled={isAssigning || !selectedClassId} style={{ padding: '0.75rem 2rem', backgroundColor: (isAssigning || !selectedClassId) ? '#9ca3af' : '#10b981', color: 'white', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: (isAssigning || !selectedClassId) ? 'not-allowed' : 'pointer' }}>
-								{isAssigning ? "Memproses..." : "Simpan Pembagian Kelas"}
-							</button>
-						</div>
+						<button type="submit" disabled={isLoading} style={{ width: '100%', padding: '0.875rem', backgroundColor: '#3b82f6', color: 'white', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
+							{isLoading ? 'Menyimpan...' : 'Simpan Kelas'}
+						</button>
 					</form>
 				</div>
-
-			</div>
+			)}
 		</div>
 	);
 }

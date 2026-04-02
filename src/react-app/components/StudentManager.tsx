@@ -1,215 +1,474 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+
+interface Student {
+	id: string;
+	full_name: string;
+	photo_url: string | null;
+	qr_identifier: string;
+}
 
 export default function StudentManager() {
-	const [fullName, setFullName] = useState("");
-	const [selectedFile, setSelectedFile] = useState<Blob | null>(null); // Menyimpan file binary hasil kompresi
-	const [previewUrl, setPreviewUrl] = useState<string>(""); // Menyimpan URL sementara untuk pratinjau
-	const [isLoading, setIsLoading] = useState(false);
-	const [message, setMessage] = useState({ type: "", text: "" });
-	const [newStudentData, setNewStudentData] = useState<{name: string, qr_code_token: string, photo_url: string} | null>(null);
+	// State Data
+	const [allStudents, setAllStudents] = useState<Student[]>([]);
+	const [searchResults, setSearchResults] = useState<Student[]>([]);
+	const [searchQuery, setSearchQuery] = useState("");
+	const [hasSearched, setHasSearched] = useState(false);
 	
-	const fileInputRef = useRef<HTMLInputElement>(null);
+	// State Mode UI (Penentu "Halaman" mana yang aktif)
+	const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
+	const [isEditing, setIsEditing] = useState(false);
+	const [isAdding, setIsAdding] = useState(false);
+	
+	// State Hapus (Verifikasi 2 Kali)
+	const [deleteStep, setDeleteStep] = useState(0); 
 
-	// Membersihkan memori browser dari URL pratinjau saat komponen ditutup
-	useEffect(() => {
-		return () => {
-			if (previewUrl) URL.revokeObjectURL(previewUrl);
-		};
-	}, [previewUrl]);
+	const [isLoading, setIsLoading] = useState(false);
+	const formRef = useRef<HTMLFormElement>(null);
 
-	// --- FUNGSI KOMPRESI GAMBAR HD (TO BLOB) ---
-	const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-		const file = e.target.files?.[0];
-		if (!file) return;
-
-		if (!file.type.startsWith("image/")) {
-			setMessage({ type: "error", text: "Harap unggah file gambar (.jpg, .png)" });
-			return;
-		}
-
-		const reader = new FileReader();
-		reader.onload = (event) => {
-			const img = new Image();
-			img.onload = () => {
-				const canvas = document.createElement("canvas");
-				// Menaikkan batas resolusi menjadi 800px agar wajah tetap HD saat dicetak
-				const MAX_WIDTH = 800; 
-				let width = img.width;
-				let height = img.height;
-
-				if (width > MAX_WIDTH) {
-					height = Math.round((height * MAX_WIDTH) / width);
-					width = MAX_WIDTH;
+	const fetchStudents = async () => {
+		const token = localStorage.getItem("authToken");
+		try {
+			const res = await fetch("/api/admin/students", {
+				headers: { "Authorization": `Bearer ${token}` }
+			});
+			const data = await res.json();
+			if (data.success) {
+				setAllStudents(data.data);
+				if (hasSearched) {
+					setSearchResults(data.data.filter((s: Student) => 
+						s.full_name.toLowerCase().includes(searchQuery.toLowerCase())
+					));
 				}
-
-				canvas.width = width;
-				canvas.height = height;
-
-				const ctx = canvas.getContext("2d");
-				if (ctx) {
-					ctx.drawImage(img, 0, 0, width, height);
-					
-					// Mengubah canvas menjadi File Binary (Blob) dengan kualitas 90%
-					canvas.toBlob(
-						(blob) => {
-							if (blob) {
-								setSelectedFile(blob);
-								// Buat URL lokal sementara untuk pratinjau form
-								const objectUrl = URL.createObjectURL(blob);
-								setPreviewUrl(objectUrl);
-							}
-						},
-						"image/jpeg",
-						0.9 
-					);
-				}
-			};
-			if (event.target?.result) {
-				img.src = event.target.result as string;
 			}
-		};
-		reader.readAsDataURL(file);
+		} catch (err) {
+			console.error("Gagal memuat data siswa", err);
+		}
 	};
 
-	// --- FUNGSI SUBMIT DENGAN FORMDATA ---
-	const handleSubmit = async (e: React.FormEvent) => {
+	useEffect(() => {
+		fetchStudents();
+	}, []);
+
+	// --- FUNGSI PENCARIAN ---
+	const handleSearchClick = () => {
+		const results = allStudents.filter(s => 
+			s.full_name.toLowerCase().includes(searchQuery.toLowerCase())
+		);
+		setSearchResults(results);
+		setHasSearched(true);
+	};
+
+	// --- FUNGSI UNDUH QR CODE ---
+	const downloadQRCode = async (student: Student) => {
+		try {
+			const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${student.qr_identifier}`;
+			const response = await fetch(qrUrl);
+			const blob = await response.blob();
+			
+			const url = window.URL.createObjectURL(blob);
+			const a = document.createElement("a");
+			a.style.display = "none";
+			a.href = url;
+			a.download = `QR-Absen-${student.full_name.replace(/\s+/g, '-')}.png`;
+			document.body.appendChild(a);
+			a.click();
+			window.URL.revokeObjectURL(url);
+			document.body.removeChild(a);
+		} catch (error) {
+			alert("Gagal mengunduh gambar QR.");
+		}
+	};
+
+	// --- CRUD OPERATIONS ---
+	const handleAdd = async (e: React.FormEvent) => {
 		e.preventDefault();
+		if (!formRef.current) return;
 		setIsLoading(true);
-		setMessage({ type: "", text: "" });
-		setNewStudentData(null);
+		const formData = new FormData(formRef.current);
+		const token = localStorage.getItem("authToken");
 
 		try {
-			const token = localStorage.getItem("authToken");
-			
-			// Menggunakan FormData untuk mengirim Teks + File sekaligus
-			const formData = new FormData();
-			formData.append("full_name", fullName);
-			
-			if (selectedFile) {
-				// Tambahkan file dengan nama bawaan 'photo.jpg'
-				formData.append("photo", selectedFile, "photo.jpg"); 
-			}
-
-			const response = await fetch("/api/admin/students", {
+			const res = await fetch("/api/admin/students", {
 				method: "POST",
-				headers: {
-					// CATATAN PENTING: Jangan set Content-Type di sini. 
-					// Browser akan otomatis men-setnya menjadi 'multipart/form-data' dengan boundary yang tepat.
-					"Authorization": `Bearer ${token}`
-				},
+				headers: { "Authorization": `Bearer ${token}` },
 				body: formData
 			});
-
-			const result = await response.json();
-
-			if (!response.ok || !result.success) {
-				setMessage({ type: "error", text: result.message || "Gagal menambah data siswa." });
-				return;
+			const data = await res.json();
+			if (data.success) {
+				alert("Siswa baru berhasil ditambahkan!");
+				handleBack(); // Kembali ke halaman awal
+				setHasSearched(false);
+				setSearchQuery("");
+				fetchStudents();
+			} else {
+				alert(data.message);
 			}
-
-			setMessage({ type: "success", text: "Data dan Foto berhasil disimpan ke R2!" });
-			setNewStudentData(result.data);
-			
-			// Reset form
-			setFullName("");
-			setSelectedFile(null);
-			setPreviewUrl("");
-			if (fileInputRef.current) fileInputRef.current.value = "";
-
-		} catch (error) {
-			setMessage({ type: "error", text: "Terjadi kesalahan jaringan saat menghubungi server." });
+		} catch (err) {
+			alert("Terjadi kesalahan jaringan.");
 		} finally {
 			setIsLoading(false);
 		}
 	};
 
-	return (
-		<div>
-			<h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '1.5rem', color: '#1f2937' }}>Manajemen Data Siswa (R2 Storage)</h2>
-			
-			<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
-				{/* KOLOM KIRI: FORM */}
-				<div style={{ backgroundColor: '#f9fafb', padding: '1.5rem', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
-					<h3 style={{ fontSize: '1.125rem', fontWeight: 'bold', marginBottom: '1rem' }}>Pendaftaran Siswa Baru</h3>
-					
-					{message.text && (
-						<div style={{ padding: '0.75rem', marginBottom: '1rem', borderRadius: '4px', backgroundColor: message.type === 'error' ? '#fee2e2' : '#dcfce3', color: message.type === 'error' ? '#b91c1c' : '#15803d' }}>
-							{message.text}
-						</div>
-					)}
+	const handleUpdate = async (e: React.FormEvent) => {
+		e.preventDefault();
+		if (!selectedStudent || !formRef.current) return;
+		setIsLoading(true);
+		const formData = new FormData(formRef.current);
+		const token = localStorage.getItem("authToken");
 
-					<form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-						<div>
-							<label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500' }}>Nama Lengkap *</label>
-							<input 
-								type="text" 
-								value={fullName} 
-								onChange={(e) => setFullName(e.target.value)} 
-								required 
-								placeholder="Contoh: Budi Santoso"
-								style={{ width: '100%', padding: '0.75rem', borderRadius: '4px', border: '1px solid #d1d5db', boxSizing: 'border-box' }} 
-							/>
+		try {
+			const res = await fetch(`/api/admin/students/${selectedStudent.id}`, {
+				method: "PUT",
+				headers: { "Authorization": `Bearer ${token}` },
+				body: formData
+			});
+			const data = await res.json();
+			if (data.success) {
+				alert("Data berhasil diperbarui");
+				setIsEditing(false); // Tetap di halaman detail, tapi keluar mode edit
+				fetchStudents();
+				
+				// Update state lokal agar UI langsung berubah tanpa refresh penuh
+				const updatedPhoto = data.photo_url || selectedStudent.photo_url;
+				const updatedName = formData.get("full_name") as string;
+				setSelectedStudent({...selectedStudent, full_name: updatedName, photo_url: updatedPhoto});
+				
+			} else {
+				alert(data.message);
+			}
+		} catch (err) {
+			alert("Terjadi kesalahan jaringan.");
+		} finally {
+			setIsLoading(false);
+		}
+	};
+
+	const handleInitiateDelete = () => {
+		if (deleteStep === 0) setDeleteStep(1);
+		else if (deleteStep === 1) setDeleteStep(2);
+		else executeDelete();
+	};
+
+	const cancelDelete = () => setDeleteStep(0);
+
+	const executeDelete = async () => {
+		if (!selectedStudent) return;
+		const token = localStorage.getItem("authToken");
+		try {
+			const res = await fetch(`/api/admin/students/${selectedStudent.id}`, {
+				method: "DELETE",
+				headers: { "Authorization": `Bearer ${token}` }
+			});
+			const data = await res.json();
+			
+			if (data.success) {
+				alert("Data berhasil dihapus.");
+				handleBack(); // Kembali ke daftar setelah dihapus
+				fetchStudents();
+			} else {
+				alert(data.message);
+			}
+		} catch (err) {
+			alert("Terjadi kesalahan jaringan.");
+		}
+	};
+
+	// --- NAVIGASI HALAMAN VIRTUAL ---
+	const openAddMode = () => {
+		setSelectedStudent(null);
+		setIsEditing(false);
+		setIsAdding(true);
+	};
+
+	const openDetailMode = (student: Student) => {
+		setIsAdding(false);
+		setIsEditing(false);
+		setDeleteStep(0);
+		setSelectedStudent(student);
+	};
+
+	const handleBack = () => {
+		setSelectedStudent(null);
+		setIsAdding(false);
+		setIsEditing(false);
+		setDeleteStep(0);
+	};
+
+	return (
+		<>
+			<style>
+				{`
+					.student-container {
+						width: 100%;
+						max-width: 900px;
+						margin: 0 auto;
+						display: flex;
+						flex-direction: column;
+						gap: 1.5rem;
+					}
+					.search-box {
+						display: flex;
+						flex-wrap: wrap; /* Agar responsif di HP kecil */
+						gap: 0.5rem;
+						margin-bottom: 1.5rem;
+					}
+					.search-input {
+						flex: 1;
+						min-width: 200px;
+						padding: 0.875rem;
+						border-radius: 6px;
+						border: 1px solid #d1d5db;
+						outline: none;
+						font-size: 1rem;
+					}
+					.search-input:focus { border-color: #3b82f6; }
+					.btn-primary {
+						padding: 0.875rem 1.5rem;
+						background-color: #111827;
+						color: white;
+						border: none;
+						border-radius: 6px;
+						font-weight: bold;
+						cursor: pointer;
+						transition: background 0.2s;
+					}
+					.btn-primary:hover { background-color: #374151; }
+					.btn-success { background-color: #10b981; }
+					.btn-success:hover { background-color: #059669; }
+					.btn-back {
+						display: inline-flex;
+						align-items: center;
+						gap: 0.5rem;
+						padding: 0.5rem 1rem;
+						background-color: #f3f4f6;
+						color: #374151;
+						border: 1px solid #d1d5db;
+						border-radius: 6px;
+						font-weight: 600;
+						cursor: pointer;
+						margin-bottom: 1.5rem;
+						transition: all 0.2s;
+					}
+					.btn-back:hover { background-color: #e5e7eb; }
+					
+					/* Responsif Card Detail */
+					.detail-grid {
+						display: flex;
+						flex-wrap: wrap;
+						gap: 2rem;
+					}
+					.detail-info {
+						flex: 1 1 300px;
+						display: flex;
+						gap: 1.5rem;
+						align-items: flex-start;
+					}
+					.detail-qr {
+						flex: 1 1 250px;
+						display: flex;
+						flex-direction: column;
+						align-items: center;
+						background-color: #f9fafb;
+						padding: 1.5rem;
+						border-radius: 8px;
+						border: 1px dashed #d1d5db;
+					}
+				`}
+			</style>
+
+			<div className="student-container">
+				
+				{/* =========================================
+					HALAMAN 1: PENCARIAN & DAFTAR SISWA 
+				========================================= */}
+				{!selectedStudent && !isAdding && (
+					<div>
+						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+							<h2 style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>Direktori Siswa</h2>
+							<button onClick={openAddMode} className="btn-primary btn-success">
+								+ Tambah Siswa Baru
+							</button>
 						</div>
 						
-						<div>
-							<label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500' }}>Pas Foto Siswa (Otomatis Kompresi HD)</label>
+						<div className="search-box">
 							<input 
-								type="file" 
-								accept="image/png, image/jpeg, image/jpg" 
-								onChange={handleFileChange}
-								ref={fileInputRef}
-								style={{ width: '100%', padding: '0.5rem', border: '1px dashed #d1d5db', borderRadius: '4px', boxSizing: 'border-box', backgroundColor: 'white' }} 
+								type="text" 
+								placeholder="Cari nama siswa..." 
+								value={searchQuery}
+								onChange={(e) => setSearchQuery(e.target.value)}
+								onKeyDown={(e) => e.key === 'Enter' && handleSearchClick()}
+								className="search-input"
 							/>
-							
-							{previewUrl && (
-								<div style={{ marginTop: '1rem', textAlign: 'center' }}>
-									<p style={{ fontSize: '0.75rem', color: '#6b7280', marginBottom: '0.5rem' }}>Pratinjau Foto:</p>
-									<img src={previewUrl} alt="Preview" style={{ width: '120px', height: '160px', objectFit: 'cover', borderRadius: '8px', border: '2px solid #e5e7eb', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }} />
+							<button onClick={handleSearchClick} className="btn-primary">
+								Cari Siswa
+							</button>
+						</div>
+
+						<div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+							{!hasSearched ? (
+								<div style={{ textAlign: 'center', color: '#6b7280', padding: '3rem 1rem', backgroundColor: '#f9fafb', border: '2px dashed #e5e7eb', borderRadius: '8px' }}>
+									Masukkan nama siswa lalu klik tombol Cari.
 								</div>
+							) : searchResults.length === 0 ? (
+								<div style={{ textAlign: 'center', color: '#ef4444', padding: '2rem 1rem', backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontWeight: '500' }}>
+									Tidak ada siswa yang cocok dengan pencarian Anda.
+								</div>
+							) : (
+								searchResults.map(student => (
+									<button 
+										key={student.id}
+										onClick={() => openDetailMode(student)}
+										style={{ 
+											display: 'flex', alignItems: 'center', gap: '1rem',
+											textAlign: 'left', padding: '1rem 1.5rem', borderRadius: '8px', border: '1px solid #e5e7eb',
+											backgroundColor: 'white', cursor: 'pointer', transition: 'all 0.2s',
+											boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+										}}
+									>
+										{student.photo_url ? (
+											<img src={student.photo_url} alt="Foto" style={{ width: '50px', height: '50px', objectFit: 'cover', borderRadius: '50%' }} />
+										) : (
+											<div style={{ width: '50px', height: '50px', backgroundColor: '#e5e7eb', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', fontWeight: 'bold' }}>{student.full_name.charAt(0)}</div>
+										)}
+										<div>
+											<div style={{ fontWeight: 'bold', color: '#111827', fontSize: '1.125rem' }}>{student.full_name}</div>
+											<div style={{ fontSize: '0.875rem', color: '#6b7280', marginTop: '0.25rem' }}>ID: {student.qr_identifier.substring(0,8)}...</div>
+										</div>
+									</button>
+								))
 							)}
 						</div>
+					</div>
+				)}
 
-						<button 
-							type="submit" 
-							disabled={isLoading} 
-							style={{ marginTop: '0.5rem', padding: '0.75rem', backgroundColor: isLoading ? '#9ca3af' : '#2563eb', color: 'white', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: isLoading ? 'not-allowed' : 'pointer' }}
-						>
-							{isLoading ? "Mengunggah ke R2..." : "Simpan & Buat QR Code"}
-						</button>
-					</form>
-				</div>
+				{/* =========================================
+					HALAMAN 2: TAMBAH SISWA BARU 
+				========================================= */}
+				{isAdding && (
+					<div style={{ backgroundColor: 'white', padding: '2rem', borderRadius: '8px', border: '1px solid #e5e7eb', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)' }}>
+						<button onClick={handleBack} className="btn-back">⬅ Kembali ke Pencarian</button>
+						
+						<form ref={formRef} onSubmit={handleAdd} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+							<h3 style={{ fontSize: '1.5rem', fontWeight: 'bold', borderBottom: '2px solid #f3f4f6', paddingBottom: '1rem' }}>Tambah Data Siswa</h3>
+							
+							<div>
+								<label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 'bold', marginBottom: '0.5rem', color: '#374151' }}>Nama Lengkap</label>
+								<input type="text" name="full_name" required className="search-input" />
+							</div>
 
-				{/* KOLOM KANAN: ID CARD */}
-				<div style={{ backgroundColor: '#f9fafb', padding: '1.5rem', borderRadius: '8px', border: '1px solid #e5e7eb', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '300px' }}>
-					{newStudentData ? (
-						<div style={{ textAlign: 'center' }}>
-							<h3 style={{ fontSize: '1.125rem', fontWeight: 'bold', color: '#111827', marginBottom: '0.5rem' }}>Kartu Pelajar Siap Cetak</h3>
-							
-							{/* Menampilkan foto asli dari server R2 */}
-							{newStudentData.photo_url && (
-								<img src={newStudentData.photo_url} alt="Foto Siswa" style={{ width: '100px', height: '130px', objectFit: 'cover', borderRadius: '4px', marginBottom: '1rem', border: '2px solid #e5e7eb' }} />
-							)}
+							<div>
+								<label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 'bold', marginBottom: '0.5rem', color: '#374151' }}>Upload Foto (Opsional)</label>
+								<input type="file" name="photo" accept="image/jpeg, image/png" style={{ width: '100%', padding: '0.75rem', backgroundColor: '#f9fafb', border: '1px solid #d1d5db', borderRadius: '6px' }} />
+							</div>
 
-							<p style={{ marginBottom: '1rem', color: '#4b5563', fontSize: '1.1rem', fontWeight: 'bold' }}>{newStudentData.name}</p>
-							
-							<img 
-								src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${newStudentData.qr_code_token}`} 
-								alt="QR Code Siswa" 
-								style={{ border: '4px solid white', borderRadius: '8px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}
-							/>
-							
-							<p style={{ marginTop: '1.5rem', fontSize: '0.75rem', color: '#6b7280', wordBreak: 'break-all', backgroundColor: '#e5e7eb', padding: '0.5rem', borderRadius: '4px' }}>
-								UUID: {newStudentData.qr_code_token}
-							</p>
-						</div>
-					) : (
-						<div style={{ textAlign: 'center', color: '#9ca3af' }}>
-							<svg style={{ width: '4rem', height: '4rem', margin: '0 auto 1rem auto', color: '#d1d5db' }} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" /></svg>
-							<p>Isi formulir di samping untuk mendaftarkan siswa.</p>
-						</div>
-					)}
-				</div>
+							<button type="submit" disabled={isLoading} className="btn-primary btn-success" style={{ marginTop: '1rem', width: '100%' }}>
+								{isLoading ? 'Menyimpan...' : 'Simpan Siswa ke Database'}
+							</button>
+						</form>
+					</div>
+				)}
+
+				{/* =========================================
+					HALAMAN 3: DETAIL & EDIT SISWA 
+				========================================= */}
+				{selectedStudent && !isAdding && (
+					<div style={{ backgroundColor: 'white', padding: '2rem', borderRadius: '8px', border: '1px solid #e5e7eb', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)' }}>
+						<button onClick={handleBack} className="btn-back">⬅ Kembali ke Hasil Pencarian</button>
+
+						{/* TAMPILAN DETAIL */}
+						{!isEditing ? (
+							<div>
+								<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #f3f4f6', paddingBottom: '1rem', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+									<h3 style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>Profil Siswa</h3>
+									<button onClick={() => setIsEditing(true)} style={{ padding: '0.6rem 1.25rem', backgroundColor: '#3b82f6', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: '600' }}>✏️ Edit Data</button>
+								</div>
+
+								<div className="detail-grid">
+									{/* Info & Foto */}
+									<div className="detail-info">
+										{selectedStudent.photo_url ? (
+											<img src={selectedStudent.photo_url} alt="Foto" style={{ width: '120px', height: '120px', objectFit: 'cover', borderRadius: '12px', border: '1px solid #d1d5db', flexShrink: 0 }} />
+										) : (
+											<div style={{ width: '120px', height: '120px', backgroundColor: '#e5e7eb', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', flexShrink: 0, fontWeight: 'bold', fontSize: '1.25rem' }}>Tanpa Foto</div>
+										)}
+										<div>
+											<p style={{ color: '#6b7280', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Nama Lengkap</p>
+											<p style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '1rem', color: '#111827' }}>{selectedStudent.full_name}</p>
+											<p style={{ color: '#6b7280', fontSize: '0.875rem', marginBottom: '0.25rem' }}>ID Registrasi Sistem</p>
+											<code style={{ backgroundColor: '#f3f4f6', padding: '0.5rem', borderRadius: '6px', fontSize: '0.875rem', color: '#374151', wordBreak: 'break-all', display: 'inline-block' }}>{selectedStudent.id}</code>
+										</div>
+									</div>
+
+									{/* QR Code */}
+									<div className="detail-qr">
+										<p style={{ fontWeight: 'bold', marginBottom: '1rem', color: '#1f2937' }}>Kartu Identitas QR</p>
+										<img 
+											src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${selectedStudent.qr_identifier}`} 
+											alt="QR Code Siswa" 
+											style={{ width: '180px', height: '180px', marginBottom: '1rem', borderRadius: '8px' }}
+										/>
+										<button 
+											onClick={() => downloadQRCode(selectedStudent)}
+											style={{ width: '100%', padding: '0.75rem', backgroundColor: '#111827', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.875rem', fontWeight: 'bold' }}
+										>
+											⬇ Unduh QR Code
+										</button>
+									</div>
+								</div>
+
+								{/* ZONA BERBAHAYA */}
+								<div style={{ marginTop: '3rem', paddingTop: '1.5rem', borderTop: '1px solid #fca5a5', backgroundColor: '#fef2f2', padding: '1.5rem', borderRadius: '8px' }}>
+									<h4 style={{ color: '#991b1b', fontWeight: 'bold', marginBottom: '0.5rem' }}>Zona Berbahaya (Hapus Data)</h4>
+									<p style={{ fontSize: '0.875rem', color: '#b91c1c', marginBottom: '1.5rem' }}>Aksi ini akan menyembunyikan siswa dari sistem secara permanen. Rekaman absensi lama tetap tersimpan.</p>
+									
+									{deleteStep === 0 && (
+										<button onClick={handleInitiateDelete} style={{ padding: '0.75rem 1.5rem', backgroundColor: '#ef4444', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Hapus Siswa Ini</button>
+									)}
+									
+									{deleteStep === 1 && (
+										<div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+											<button onClick={handleInitiateDelete} style={{ padding: '0.75rem 1.5rem', backgroundColor: '#b91c1c', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Lanjut: Apakah Anda yakin?</button>
+											<button onClick={cancelDelete} style={{ padding: '0.75rem 1.5rem', backgroundColor: 'white', color: '#374151', border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer', fontWeight: '600' }}>Batal</button>
+										</div>
+									)}
+
+									{deleteStep === 2 && (
+										<div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+											<button onClick={handleInitiateDelete} style={{ padding: '0.75rem 1.5rem', backgroundColor: '#7f1d1d', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', animation: 'pulse 2s infinite' }}>KONFIRMASI FINAL: Hapus Sekarang!</button>
+											<button onClick={cancelDelete} style={{ padding: '0.75rem 1.5rem', backgroundColor: 'white', color: '#374151', border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer', fontWeight: '600' }}>Batal</button>
+										</div>
+									)}
+								</div>
+							</div>
+						) : (
+							/* TAMPILAN EDIT */
+							<form ref={formRef} onSubmit={handleUpdate} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+								<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #f3f4f6', paddingBottom: '1rem' }}>
+									<h3 style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>Edit Data Siswa</h3>
+									<button type="button" onClick={() => setIsEditing(false)} style={{ padding: '0.5rem 1rem', backgroundColor: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: '6px', fontWeight: '600', cursor: 'pointer' }}>Batal Edit</button>
+								</div>
+								
+								<div>
+									<label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 'bold', marginBottom: '0.5rem', color: '#374151' }}>Nama Lengkap</label>
+									<input type="text" name="full_name" defaultValue={selectedStudent.full_name} required className="search-input" />
+								</div>
+
+								<div>
+									<label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 'bold', marginBottom: '0.5rem', color: '#374151' }}>Upload Foto Baru (Biarkan kosong jika tidak ingin mengubah foto)</label>
+									<input type="file" name="photo" accept="image/jpeg, image/png" style={{ width: '100%', padding: '0.75rem', backgroundColor: '#f9fafb', border: '1px solid #d1d5db', borderRadius: '6px' }} />
+								</div>
+
+								<button type="submit" disabled={isLoading} className="btn-primary" style={{ backgroundColor: '#3b82f6', marginTop: '1rem', width: '100%' }}>
+									{isLoading ? 'Menyimpan...' : 'Simpan Perubahan'}
+								</button>
+							</form>
+						)}
+
+					</div>
+				)}
+
 			</div>
-		</div>
+		</>
 	);
 }

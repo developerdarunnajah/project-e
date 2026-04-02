@@ -9,35 +9,15 @@ const admin = new Hono<{ Bindings: Env; Variables: Variables }>();
 admin.use("*", authMiddleware, adminOnly);
 
 // --- MASTER DATA GURU ---
-admin.post("/teachers", async (c) => {
-	try {
-		const body = await c.req.json();
-		const { front_title, full_name, back_title, username, password } = body;
+// --- MASTER DATA GURU ---
 
-		if (!full_name || !username || !password) {
-			return c.json({ success: false, message: "Data wajib diisi." }, 400);
-		}
+// --- MASTER DATA GURU ---
 
-		const checkUser = await c.env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
-		if (checkUser) return c.json({ success: false, message: "Username sudah terdaftar." }, 400);
-
-		const teacherId = crypto.randomUUID();
-		const hashedPassword = await hashPassword(password);
-		const now = Math.floor(Date.now() / 1000);
-
-		await c.env.DB.prepare(
-			`INSERT INTO users (id, role, front_title, full_name, back_title, username, password, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-		).bind(teacherId, "GURU", front_title || null, full_name, back_title || null, username, hashedPassword, now).run();
-
-		return c.json({ success: true, message: "Data Guru berhasil ditambahkan." });
-	} catch (error) {
-		return c.json({ success: false, message: "Gagal menambah data guru.", error: String(error) }, 500);
-	}
-});
+// 1. GET: Ambil daftar guru aktif (Tambahan kolom photo_url)
 admin.get("/teachers", async (c) => {
 	try {
 		const { results } = await c.env.DB.prepare(
-			"SELECT id, front_title, full_name, back_title, username FROM users WHERE role = 'GURU' ORDER BY full_name ASC"
+			"SELECT id, front_title, full_name, back_title, username, photo_url FROM users WHERE role = 'GURU' AND deleted_at IS NULL ORDER BY full_name ASC"
 		).all();
 		return c.json({ success: true, data: results });
 	} catch (error) {
@@ -45,33 +25,137 @@ admin.get("/teachers", async (c) => {
 	}
 });
 
-// --- MASTER DATA KELAS ---
-// --- MASTER DATA KELAS ---
-admin.post("/classes", async (c) => {
+// 2. POST: Tambah guru baru (Diperbarui untuk menerima Upload File)
+admin.post("/teachers", async (c) => {
 	try {
-		const body = await c.req.json();
-		const { name } = body;
-        
-        // Sekarang hanya mengecek Nama Kelas saja
-		if (!name) return c.json({ success: false, message: "Nama Kelas wajib diisi." }, 400);
+		const body = await c.req.parseBody();
+		const front_title = body['front_title'] as string;
+		const full_name = body['full_name'] as string;
+		const back_title = body['back_title'] as string;
+		const username = body['username'] as string;
+		const password = body['password'] as string;
+		const photoFile = body['photo'] as File | undefined;
 
-        // Menghapus 'id' dari query INSERT. SQLite akan otomatis mengisi ID-nya (1, 2, 3, dst.)
-		await c.env.DB.prepare(`INSERT INTO classes (name) VALUES (?)`).bind(name).run();
-		
-        return c.json({ success: true, message: `Kelas ${name} berhasil ditambahkan.` });
+		if (!full_name || !username || !password) {
+			return c.json({ success: false, message: "Nama, username, dan password wajib diisi." }, 400);
+		}
+
+		const checkUser = await c.env.DB.prepare("SELECT id FROM users WHERE username = ? AND deleted_at IS NULL").bind(username).first();
+		if (checkUser) return c.json({ success: false, message: "Username sudah terdaftar." }, 400);
+
+		const teacherId = crypto.randomUUID();
+		const hashedPassword = await hashPassword(password);
+		const now = Math.floor(Date.now() / 1000);
+
+		// Logika Upload Foto (Opsional)
+		let photoUrl = null;
+		if (photoFile && photoFile.name) {
+			const fileExtension = photoFile.name.split('.').pop();
+			const fileName = `teacher-${crypto.randomUUID()}.${fileExtension}`;
+			
+			await c.env.BUCKET.put(fileName, await photoFile.arrayBuffer(), {
+				httpMetadata: { contentType: photoFile.type }
+			});
+			photoUrl = `/api/photos/${fileName}`;
+		}
+
+		await c.env.DB.prepare(
+			`INSERT INTO users (id, role, front_title, full_name, back_title, username, password, photo_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		).bind(teacherId, "GURU", front_title || null, full_name, back_title || null, username, hashedPassword, photoUrl, now).run();
+
+		return c.json({ success: true, message: "Data Guru berhasil ditambahkan." });
 	} catch (error) {
-		return c.json({ success: false, message: "Gagal menambah data kelas.", error: String(error) }, 500);
+		return c.json({ success: false, message: "Gagal menambah data guru.", error: String(error) }, 500);
 	}
 });
 
+// 3. PUT: Edit data guru (Diperbarui untuk Update Foto)
+admin.put("/teachers/:id", async (c) => {
+	try {
+		const teacherId = c.req.param("id");
+		const body = await c.req.parseBody();
+		const front_title = body['front_title'] as string;
+		const full_name = body['full_name'] as string;
+		const back_title = body['back_title'] as string;
+		const username = body['username'] as string;
+		const password = body['password'] as string;
+		const photoFile = body['photo'] as File | undefined;
+
+		if (!full_name || !username) return c.json({ success: false, message: "Nama dan username wajib diisi." }, 400);
+
+		const checkUser = await c.env.DB.prepare("SELECT id FROM users WHERE username = ? AND id != ? AND deleted_at IS NULL").bind(username, teacherId).first();
+		if (checkUser) return c.json({ success: false, message: "Username sudah dipakai orang lain." }, 400);
+
+		let query = "UPDATE users SET front_title = ?, full_name = ?, back_title = ?, username = ?";
+		let params: any[] = [front_title || null, full_name, back_title || null, username];
+
+		if (password && password.trim() !== "") {
+			const hashedPassword = await hashPassword(password);
+			query += ", password = ?";
+			params.push(hashedPassword);
+		}
+
+		// Logika Update Foto Baru
+		if (photoFile && photoFile.name) {
+			const fileExtension = photoFile.name.split('.').pop();
+			const fileName = `teacher-${crypto.randomUUID()}.${fileExtension}`;
+			
+			await c.env.BUCKET.put(fileName, await photoFile.arrayBuffer(), {
+				httpMetadata: { contentType: photoFile.type }
+			});
+			query += ", photo_url = ?";
+			params.push(`/api/photos/${fileName}`);
+		}
+
+		query += " WHERE id = ? AND role = 'GURU' AND deleted_at IS NULL";
+		params.push(teacherId);
+
+		const result = await c.env.DB.prepare(query).bind(...params).run();
+
+		if (result.meta.changes === 0) return c.json({ success: false, message: "Data guru tidak ditemukan." }, 404);
+
+		return c.json({ success: true, message: "Data Guru berhasil diperbarui." });
+	} catch (error) {
+		return c.json({ success: false, message: "Gagal memperbarui data guru.", error: String(error) }, 500);
+	}
+});
+
+// --- MASTER DATA KELAS ---
+
+// GET: Ambil data kelas
 admin.get("/classes", async (c) => {
 	try {
-		const { results } = await c.env.DB.prepare("SELECT id, name FROM classes ORDER BY name ASC").all();
+		const { results } = await c.env.DB.prepare("SELECT * FROM classes ORDER BY name ASC").all();
 		return c.json({ success: true, data: results });
 	} catch (error) {
 		return c.json({ success: false, message: "Gagal mengambil data kelas.", error: String(error) }, 500);
 	}
 });
+
+// POST: Tambah kelas baru (Diperbarui untuk Auto Increment)
+admin.post("/classes", async (c) => {
+	try {
+		const body = await c.req.json();
+		const { name } = body;
+
+		if (!name) return c.json({ success: false, message: "Nama kelas wajib diisi." }, 400);
+
+		// Cek apakah nama kelas sudah ada agar tidak duplikat
+		const checkClass = await c.env.DB.prepare("SELECT id FROM classes WHERE name = ?").bind(name).first();
+		if (checkClass) return c.json({ success: false, message: "Kelas tersebut sudah terdaftar." }, 400);
+
+		// Kita HANYA memasukkan 'name'. Kolom 'id' akan diisi otomatis dengan angka oleh SQLite.
+		await c.env.DB.prepare(
+			`INSERT INTO classes (name) VALUES (?)`
+		).bind(name).run();
+
+		return c.json({ success: true, message: "Kelas baru berhasil ditambahkan." });
+	} catch (error) {
+		return c.json({ success: false, message: "Gagal menambah data kelas.", error: String(error) }, 500);
+	}
+});
+
+
 
 // --- MASTER DATA SISWA ---
 admin.post("/students", async (c) => {
@@ -111,40 +195,122 @@ admin.post("/students", async (c) => {
 	}
 });
 
+// 1. UPDATE ENDPOINT GET (Hanya tampilkan yang tidak di-soft delete)
+// --- GET DATA SISWA (Diperbarui untuk membaca class_id) ---
 admin.get("/students", async (c) => {
 	try {
-		const { results } = await c.env.DB.prepare("SELECT id, full_name, photo_url, qr_identifier FROM students ORDER BY full_name ASC").all();
+		// Menggunakan LEFT JOIN agar nama kelas ikut terbaca
+		const query = `
+			SELECT s.id, s.full_name, s.photo_url, s.qr_identifier, s.class_id, c.name as class_name 
+			FROM students s 
+			LEFT JOIN classes c ON s.class_id = c.id 
+			WHERE s.deleted_at IS NULL 
+			ORDER BY s.full_name ASC
+		`;
+		const { results } = await c.env.DB.prepare(query).all();
 		return c.json({ success: true, data: results });
 	} catch (error) {
 		return c.json({ success: false, message: "Gagal mengambil data siswa.", error: String(error) }, 500);
 	}
 });
 
-// --- PEMBAGIAN KELAS (BATCH ASSIGNMENT) ---
+// --- PEMBAGIAN / MIGRASI KELAS (Diperbarui) ---
+// --- PEMBAGIAN / MIGRASI KELAS ---
 admin.post("/class-assign", async (c) => {
 	try {
 		const body = await c.req.json();
-		const { class_id, academic_year, student_ids } = body;
+		const { target_class_id, student_ids } = body;
 
-		if (!class_id || !academic_year || !Array.isArray(student_ids) || student_ids.length === 0) {
-			return c.json({ success: false, message: "Data tidak lengkap." }, 400);
+		// 1. Validasi format payload dari frontend
+		if (!target_class_id || !Array.isArray(student_ids) || student_ids.length === 0) {
+			return c.json({ success: false, message: "Data tujuan kelas dan siswa tidak lengkap." }, 400);
 		}
 
-		const statements = student_ids.map((studentId: string) => {
-			return c.env.DB.prepare(
-				`INSERT INTO class_students (class_id, student_id, academic_year) VALUES (?, ?, ?)`
-			).bind(class_id, studentId, academic_year);
-		});
+		// 2. CEK MANUAL: Pastikan target_class_id benar-benar ada di tabel classes
+		const checkClass = await c.env.DB.prepare("SELECT id FROM classes WHERE id = ?").bind(target_class_id).first();
+		if (!checkClass) {
+			return c.json({ success: false, message: "Gagal: Kelas tujuan tidak ditemukan di database. Coba muat ulang halaman." }, 404);
+		}
 
-		await c.env.DB.batch(statements as any[]);
-		return c.json({ success: true, message: `${student_ids.length} siswa berhasil dimasukkan ke kelas.` });
+		// 3. Eksekusi Migrasi
+		const placeholders = student_ids.map(() => "?").join(",");
+		const result = await c.env.DB.prepare(
+			`UPDATE students SET class_id = ? WHERE id IN (${placeholders}) AND deleted_at IS NULL`
+		).bind(target_class_id, ...student_ids).run();
+
+		return c.json({ success: true, message: `${result.meta.changes} siswa berhasil dipindahkan ke kelas baru.` });
+
 	} catch (error) {
-		if (String(error).includes("UNIQUE constraint failed")) {
-			return c.json({ success: false, message: "Sebagian siswa sudah terdaftar di kelas tersebut." }, 400);
-		}
-		return c.json({ success: false, message: "Gagal memproses pembagian kelas.", error: String(error) }, 500);
+		// Log error ini akan muncul di terminal jika terjadi masalah database lainnya
+		console.error("[DB ERROR di /class-assign]:", error);
+		return c.json({ success: false, message: "Terjadi kegagalan sistem saat memproses migrasi.", error: String(error) }, 500);
 	}
 });
+
+// 2. ENDPOINT BARU: UPDATE DATA SISWA
+admin.put("/students/:id", async (c) => {
+	try {
+		const studentId = c.req.param("id");
+		const body = await c.req.parseBody();
+		const fullName = body['full_name'] as string;
+		const photoFile = body['photo'] as File | undefined;
+
+		if (!fullName) return c.json({ success: false, message: "Nama lengkap wajib diisi." }, 400);
+
+		let photoUrlQuery = "";
+		let queryParams: any[] = [fullName];
+
+		// Jika ada foto baru yang diunggah
+		if (photoFile && photoFile.name) {
+			const fileExtension = photoFile.name.split('.').pop();
+			const fileName = `student-${crypto.randomUUID()}.${fileExtension}`;
+			
+			await c.env.BUCKET.put(fileName, await photoFile.arrayBuffer(), {
+				httpMetadata: { contentType: photoFile.type }
+			});
+			
+			const photoUrl = `/api/photos/${fileName}`;
+			photoUrlQuery = ", photo_url = ?";
+			queryParams.push(photoUrl);
+		}
+
+		queryParams.push(studentId);
+
+		const result = await c.env.DB.prepare(
+			`UPDATE students SET full_name = ?${photoUrlQuery} WHERE id = ? AND deleted_at IS NULL`
+		).bind(...queryParams).run();
+
+		if (result.meta.changes === 0) {
+			return c.json({ success: false, message: "Siswa tidak ditemukan." }, 404);
+		}
+
+		return c.json({ success: true, message: "Data Siswa berhasil diperbarui." });
+	} catch (error) {
+		return c.json({ success: false, message: "Gagal memperbarui data.", error: String(error) }, 500);
+	}
+});
+
+// 3. ENDPOINT BARU: SOFT DELETE SISWA
+admin.delete("/students/:id", async (c) => {
+	try {
+		const studentId = c.req.param("id");
+		const now = Math.floor(Date.now() / 1000);
+
+		const result = await c.env.DB.prepare(
+			"UPDATE students SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL"
+		).bind(now, studentId).run();
+
+		if (result.meta.changes === 0) {
+			return c.json({ success: false, message: "Siswa tidak ditemukan atau sudah dihapus." }, 404);
+		}
+
+		return c.json({ success: true, message: "Data Siswa berhasil dinonaktifkan." });
+	} catch (error) {
+		return c.json({ success: false, message: "Gagal menghapus data.", error: String(error) }, 500);
+	}
+});
+
+
 // --- MASTER DATA ATURAN JAM ABSENSI ---
 admin.get("/rules", async (c) => {
 	try {

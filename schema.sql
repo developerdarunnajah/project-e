@@ -138,3 +138,6 @@ CREATE TABLE IF NOT EXISTS event_attendance (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_event_attendance ON event_attendance(event_id);
+-- ALTER TABLE students ADD COLUMN deleted_at INTEGER DEFAULT NULL;
+-- ALTER TABLE users ADD COLUMN deleted_at INTEGER DEFAULT NULL;
+ALTER TABLE students ADD COLUMN class_id TEXT REFERENCES classes(id) ON DELETE SET NULL;
