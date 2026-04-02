@@ -2,171 +2,217 @@ import { useState, useEffect, useRef } from "react";
 import { Html5QrcodeScanner } from "html5-qrcode";
 import { useNavigate } from "react-router-dom";
 
+interface VerifyResult {
+	action: string;
+	role: string;
+	name: string;
+	photo?: string | null;
+	status: string;
+	event_name?: string;
+	qr: string;
+}
+
 export default function TeacherScanner() {
 	const navigate = useNavigate();
+	const [error, setError] = useState("");
+	const [notes, setNotes] = useState("");
 	
-	// State untuk UI
-	const [teacherName, setTeacherName] = useState("");
-	const [scanStatus, setScanStatus] = useState<'idle' | 'success' | 'error'>('idle');
-	const [scanMessage, setScanMessage] = useState("");
-	const [studentData, setStudentData] = useState<{ name: string, photo: string, status: string, time: string } | null>(null);
+	// State Modal & Data Verifikasi
+	const [verifyData, setVerifyData] = useState<VerifyResult | null>(null);
+	const [isProcessing, setIsProcessing] = useState(false);
 	
-	// Gunakan useRef agar nilai isProcessing bisa dibaca di dalam fungsi kamera tanpa me-render ulang kamera
-	const isProcessingRef = useRef(false);
+	// Menggunakan Ref agar fungsi callback scanner selalu mendapatkan status terbaru tanpa re-render
+	const isScanningRef = useRef(true); 
 
 	useEffect(() => {
-		// Ambil nama guru dari local storage
-		const name = localStorage.getItem("userName");
-		if (name) setTeacherName(name);
-
-		// Inisialisasi Kamera Scanner
-		const scanner = new Html5QrcodeScanner(
-			"reader",
-			{ 
-				fps: 10, 
-				qrbox: { width: 250, height: 250 },
-				aspectRatio: 1.0 
-			},
-			/* verbose= */ false
-		);
+		const scanner = new Html5QrcodeScanner("reader", { 
+			fps: 10, 
+			qrbox: { width: 250, height: 250 },
+			aspectRatio: 1.0
+		}, false);
 
 		const onScanSuccess = async (decodedText: string) => {
-			// Jika sedang memproses data lain, abaikan scan ini
-			if (isProcessingRef.current) return;
+			// Jika sedang memproses/menampilkan modal, abaikan scan baru
+			if (!isScanningRef.current) return;
 			
-			isProcessingRef.current = true;
-			setScanStatus('idle');
-			setStudentData(null);
+			isScanningRef.current = false; // Jeda scanner secara logika
+			setError("");
 
+			const token = localStorage.getItem("authToken");
 			try {
-				const token = localStorage.getItem("authToken");
-				const response = await fetch("/api/scan", {
+				const res = await fetch("/api/scan/verify", {
 					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-						"Authorization": `Bearer ${token}`
-					},
+					headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
 					body: JSON.stringify({ qr_identifier: decodedText })
 				});
-
-				const data = await response.json();
+				const data = await res.json();
 
 				if (data.success) {
-					setScanStatus('success');
-					setScanMessage(data.message);
-					setStudentData(data.student);
+					setVerifyData(data); // Membuka popup modal
 				} else {
-					setScanStatus('error');
-					setScanMessage(data.message);
+					setError(data.message);
+					setTimeout(() => { setError(""); isScanningRef.current = true; }, 3000); // Resume scanner setelah 3 detik
 				}
-			} catch (error) {
-				setScanStatus('error');
-				setScanMessage("Terjadi kesalahan jaringan.");
-			} finally {
-				// Beri jeda 3 detik sebelum kamera bisa membaca QR lagi
-				setTimeout(() => {
-					isProcessingRef.current = false;
-					setScanStatus('idle');
-					setStudentData(null);
-					setScanMessage("");
-				}, 3000);
+			} catch (err) {
+				setError("Terjadi kesalahan jaringan.");
+				setTimeout(() => { setError(""); isScanningRef.current = true; }, 3000);
 			}
 		};
 
-		const onScanFailure = (_error: any) => {
-			// Abaikan error saat kamera tidak mendeteksi QR (karena akan terus berjalan tiap frame)
-		};
+		scanner.render(onScanSuccess, () => {});
 
-		// Nyalakan kamera
-		scanner.render(onScanSuccess, onScanFailure);
-
-		// Matikan kamera secara otomatis jika guru pindah halaman/keluar
 		return () => {
 			scanner.clear().catch(console.error);
 		};
 	}, []);
 
-	const handleLogout = () => {
-		localStorage.removeItem("authToken");
-		localStorage.removeItem("userRole");
-		localStorage.removeItem("userName");
-		navigate("/", { replace: true });
+	// --- FUNGSI KONFIRMASI (SIMPAN KE DB) ---
+	const handleConfirm = async () => {
+		if (!verifyData) return;
+		setIsProcessing(true);
+		const token = localStorage.getItem("authToken");
+
+		try {
+			const res = await fetch("/api/scan/confirm", {
+				method: "POST",
+				headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+				body: JSON.stringify({ qr_identifier: verifyData.qr, notes: notes })
+			});
+			const data = await res.json();
+
+			if (data.success) {
+				alert(`✅ Berhasil: ${data.action} - ${data.name}`);
+				closeModal();
+			} else {
+				alert(`❌ Gagal: ${data.message}`);
+				setIsProcessing(false);
+			}
+		} catch (err) {
+			alert("Terjadi kesalahan jaringan.");
+			setIsProcessing(false);
+		}
 	};
 
+	// --- FUNGSI BATAL ---
+	const closeModal = () => {
+		setVerifyData(null);
+		setNotes("");
+		setIsProcessing(false);
+		setError("");
+		// Beri jeda 1 detik sebelum kamera membaca lagi agar tidak tercetak dua kali tak sengaja
+		setTimeout(() => { isScanningRef.current = true; }, 1000); 
+	};
+
+	const userRole = localStorage.getItem("userRole");
+
 	return (
-		<div style={{ minHeight: '100vh', backgroundColor: '#f3f4f6', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '2rem' }}>
+		<div style={{ minHeight: '100vh', backgroundColor: '#f3f4f6', display: 'flex', flexDirection: 'column' }}>
 			
-			{/* HEADER */}
-			<div style={{ width: '100%', maxWidth: '600px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', backgroundColor: 'white', padding: '1rem 1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-				<div>
-					<h1 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#1f2937' }}>Terminal Absensi</h1>
-					<p style={{ fontSize: '0.875rem', color: '#6b7280' }}>Petugas: {teacherName}</p>
-				</div>
-				<button onClick={handleLogout} style={{ padding: '0.5rem 1rem', backgroundColor: '#ef4444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
-					Tutup Sesi
-				</button>
-			</div>
-
-			{/* AREA SCANNER & HASIL */}
-			<div style={{ width: '100%', maxWidth: '600px', backgroundColor: 'white', padding: '2rem', borderRadius: '8px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-				
-				{/* KOTAK KAMERA */}
-				<div>
-					<h2 style={{ fontSize: '1.125rem', fontWeight: 'bold', textAlign: 'center', marginBottom: '1rem' }}>Arahkan QR Code ke Kamera</h2>
-					{/* Div 'reader' ini adalah tempat HTML5-QRCode menyisipkan kameranya */}
-					<div id="reader" style={{ width: '100%', borderRadius: '8px', overflow: 'hidden', border: '2px solid #e5e7eb' }}></div>
-				</div>
-
-				{/* PANEL NOTIFIKASI HASIL SCAN */}
-				<div style={{ 
-					minHeight: '150px', 
-					padding: '1.5rem', 
-					borderRadius: '8px', 
-					display: 'flex', 
-					flexDirection: 'column', 
-					alignItems: 'center', 
-					justifyContent: 'center',
-					textAlign: 'center',
-					backgroundColor: scanStatus === 'idle' ? '#f9fafb' : (scanStatus === 'success' ? '#dcfce3' : '#fee2e2'),
-					border: `2px solid ${scanStatus === 'idle' ? '#e5e7eb' : (scanStatus === 'success' ? '#10b981' : '#ef4444')}`
-				}}>
-					
-					{scanStatus === 'idle' && (
-						<p style={{ color: '#6b7280', fontSize: '1.1rem' }}>Menunggu pindaian kartu pelajar...</p>
+			{/* NAVBAR ATAS */}
+			<header style={{ padding: '1rem 1.5rem', backgroundColor: '#111827', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+				<h1 style={{ fontSize: '1.25rem', fontWeight: 'bold' }}>Terminal Scanner</h1>
+				<div style={{ display: 'flex', gap: '1rem' }}>
+					{userRole === "ADMIN" && (
+						<button onClick={() => navigate("/admin")} style={{ padding: '0.5rem 1rem', backgroundColor: '#374151', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Dasbor Admin</button>
 					)}
+					<button onClick={() => { localStorage.clear(); navigate("/"); }} style={{ padding: '0.5rem 1rem', backgroundColor: '#ef4444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>Keluar</button>
+				</div>
+			</header>
 
-					{scanStatus === 'error' && (
-						<div style={{ color: '#b91c1c' }}>
-							<svg style={{ width: '3rem', height: '3rem', margin: '0 auto 0.5rem' }} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-							<h3 style={{ fontSize: '1.25rem', fontWeight: 'bold' }}>Akses Ditolak</h3>
-							<p style={{ marginTop: '0.5rem' }}>{scanMessage}</p>
+			{/* AREA PEMINDAI UTAMA */}
+			<main style={{ flex: 1, padding: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+				<div style={{ width: '100%', maxWidth: '500px', backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
+					<h2 style={{ textAlign: 'center', fontWeight: 'bold', fontSize: '1.25rem', marginBottom: '1rem', color: '#1f2937' }}>Arahkan QR Code ke Kamera</h2>
+					
+					{/* Kamera akan di-render di dalam div ini */}
+					<div id="reader" style={{ width: '100%', overflow: 'hidden', borderRadius: '8px' }}></div>
+					
+					{error && (
+						<div style={{ marginTop: '1rem', padding: '1rem', backgroundColor: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: '6px', textAlign: 'center', fontWeight: 'bold' }}>
+							{error}
 						</div>
 					)}
+				</div>
+			</main>
 
-					{scanStatus === 'success' && studentData && (
-						<div style={{ color: '#15803d', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-							{studentData.photo ? (
-								<img src={studentData.photo} alt="Foto Siswa" style={{ width: '80px', height: '80px', borderRadius: '50%', objectFit: 'cover', border: '3px solid #10b981', marginBottom: '1rem' }} />
+			{/* ======================================================== */}
+			{/* MODAL KONFIRMASI (Tampil Saat QR Dikenali) */}
+			{/* ======================================================== */}
+			{verifyData && (
+				<div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+					<div style={{ backgroundColor: 'white', width: '100%', maxWidth: '400px', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)' }}>
+						
+						{/* Header Modal - Berubah Warna Sesuai Aksi */}
+						<div style={{ 
+							padding: '1.5rem', textAlign: 'center', color: 'white',
+							backgroundColor: verifyData.action === "MASUK" ? '#2563eb' : (verifyData.action === "PULANG" ? '#16a34a' : '#9333ea') 
+						}}>
+							<h3 style={{ fontSize: '1.5rem', fontWeight: 'bold', margin: 0 }}>
+								KONFIRMASI {verifyData.action}
+							</h3>
+							{verifyData.event_name && <p style={{ margin: '0.5rem 0 0 0', opacity: 0.9 }}>Acara: {verifyData.event_name}</p>}
+						</div>
+
+						{/* Konten Modal */}
+						<div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+							{verifyData.photo ? (
+								<img src={verifyData.photo} alt="Foto" style={{ width: '100px', height: '100px', objectFit: 'cover', borderRadius: '50%', border: '4px solid #f3f4f6', marginBottom: '1rem' }} />
 							) : (
-								<div style={{ width: '80px', height: '80px', borderRadius: '50%', backgroundColor: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 'bold', fontSize: '1.5rem', marginBottom: '1rem' }}>
-									{studentData.name.charAt(0)}
+								<div style={{ width: '100px', height: '100px', backgroundColor: '#1f2937', color: 'white', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2.5rem', fontWeight: 'bold', marginBottom: '1rem' }}>
+									{verifyData.name.charAt(0).toUpperCase()}
 								</div>
 							)}
-							<h3 style={{ fontSize: '1.25rem', fontWeight: 'bold', marginBottom: '0.25rem' }}>{studentData.name}</h3>
-							<div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
-								<span style={{ backgroundColor: '#10b981', color: 'white', padding: '0.25rem 0.75rem', borderRadius: '999px', fontSize: '0.875rem', fontWeight: 'bold' }}>
-									{studentData.status}
-								</span>
-								<span style={{ backgroundColor: 'white', color: '#15803d', padding: '0.25rem 0.75rem', borderRadius: '999px', fontSize: '0.875rem', border: '1px solid #10b981' }}>
-									{studentData.time}
-								</span>
-							</div>
-							<p style={{ marginTop: '0.75rem', fontSize: '0.875rem', fontWeight: '500' }}>{scanMessage}</p>
-						</div>
-					)}
-				</div>
+							
+							<div style={{ fontSize: '0.875rem', color: '#6b7280', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{verifyData.role}</div>
+							<h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#111827', margin: '0.25rem 0 0.5rem 0', textAlign: 'center' }}>{verifyData.name}</h2>
+							
+							{/* Label Status Terlambat (merah) atau Hadir (hijau) */}
+							<span style={{ 
+								padding: '0.25rem 0.75rem', borderRadius: '999px', fontSize: '0.875rem', fontWeight: 'bold',
+								backgroundColor: verifyData.status === "TERLAMBAT" ? '#fef2f2' : '#f0fdf4',
+								color: verifyData.status === "TERLAMBAT" ? '#dc2626' : '#16a34a',
+								border: `1px solid ${verifyData.status === "TERLAMBAT" ? '#fecaca' : '#bbf7d0'}`
+							}}>
+								Status Sistem: {verifyData.status}
+							</span>
 
-			</div>
+							{/* Kolom Catatan (Hanya relevan untuk absen siswa) */}
+							{verifyData.role === "SISWA" && (
+								<div style={{ width: '100%', marginTop: '1.5rem' }}>
+									<label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 'bold', marginBottom: '0.5rem', color: '#374151' }}>Catatan Petugas (Opsional)</label>
+									<textarea 
+										value={notes} 
+										onChange={(e) => setNotes(e.target.value)}
+										placeholder="Misal: Alasan terlambat..."
+										rows={2}
+										style={{ width: '100%', padding: '0.75rem', borderRadius: '6px', border: '1px solid #d1d5db', outline: 'none', resize: 'none' }}
+									/>
+								</div>
+							)}
+						</div>
+
+						{/* Tombol Aksi */}
+						<div style={{ display: 'flex', gap: '1rem', padding: '1.5rem', backgroundColor: '#f9fafb', borderTop: '1px solid #e5e7eb' }}>
+							<button 
+								onClick={closeModal} 
+								disabled={isProcessing}
+								style={{ flex: 1, padding: '0.875rem', backgroundColor: 'white', color: '#374151', border: '1px solid #d1d5db', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
+							>
+								Batalkan
+							</button>
+							<button 
+								onClick={handleConfirm} 
+								disabled={isProcessing}
+								style={{ flex: 1, padding: '0.875rem', backgroundColor: '#111827', color: 'white', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: isProcessing ? 'not-allowed' : 'pointer' }}
+							>
+								{isProcessing ? 'Menyimpan...' : 'Simpan Data'}
+							</button>
+						</div>
+
+					</div>
+				</div>
+			)}
+
 		</div>
 	);
 }
